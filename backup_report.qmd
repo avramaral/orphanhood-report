@@ -1,0 +1,326 @@
+---
+title: "Orphanhood in Colombia"
+format:
+  html: 
+    css: "style.css"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library("tidyverse")
+library("DT")
+library("sf")
+library("viridis")
+```
+
+## Mortality and Fertility rates
+
+The mortality and fertility rates are computed based on the populations estimates from 1998 to 2021. Such population estimates are based on the census of 2005 and 2018, such that the remaining years were obtained by linearly interpolating (and extrapolating) these two data sources **at the desired spatial resolution**.
+
+However, specially for fine resolutions (e.g., at municipality level), the population estimates might be inaccurate (so are the mortality and fertility rates). This happens more often for estimates before 2005. 
+
+Notably, for the following observed issues, we proceeded as detailed below.
+
+---
+
+### Problem #1 
+
+**Description:** Negative population estimate (from the linear interpolation method).
+
+**Solution:** Replace the negative population estimates with later year estimates (if the estimates are always negative, set the population size to `0`).
+
+---
+
+### Problem #2
+
+
+**Description:** Impossible population estimates with respect to the number of deaths (e.g., the "number of deaths" estimates are larger than the population estimates for some strata).
+
+**Solution:** Treat the impossible values as missing data (i.e., `NA`), and use some imputation technique to deal with these cases. In particular, we can use the mean (or median) of `year + 1` and `year - 1`.
+
+---
+
+### Problem #3
+
+
+**Description:** Impossible population estimates with respect to the number of births (e.g., the number of births is non-zero while the population is zero).
+
+**Solution:** Same as in `Problem #2`.
+
+---
+
+### Problem #4
+
+**Description:** Unlikely population estimates with respect to the number of deaths.
+
+**Solution:** Set the population size such that the mortality rate is the (lower or upper) limit not to be considered an outlier. To determine the threshold defining an outlier, we analyze the variation of the corresponding time series (say, $\text{mean} \pm 3\times\text{sd}$) over a pre-defined time period; in particular, we considered the interpolated (not extrapolated) interval---i.e., 2005-2018.
+
+---
+
+### Problem #5
+
+
+**Description:** Impossible population estimates with respect to the number of births (e.g., the number of births is non-zero while the population is zero).
+
+**Solution:** Same as in `Problem #2`.
+
+--- 
+
+2.  Impossible population estimates with respect to the number of deaths (e.g., the "number of deaths" estimates are larger than the population estimates for some strata).
+3.  Impossible population estimates with respect to the number of births (e.g., the number of births is non-zero while the population is zero).
+4.  Unlikely population estimates with respect to the number of deaths.
+5.  Unlikely population estimates with respect to the number of births (e.g., the number of births are 5+ times the number population size for some strata).
+
+<!--Besides these problems (the way we are currently dealing with them is described below), we may also spot many outliers. In particular, these unusual values are more often observed before 2005. 
+In this setting, [it is possible]{.underline} to freeze the mortality and fertility rates in 1998-2005 as the ones in 2006 (although after other corrections, this might be unnecessary).-->
+
+As solutions for these issues, we are doing the following
+
+1.  Replace the negative population estimates with later year estimates (if the estimates are always negative, set the population size to `0`).
+2.  Treat the impossible values as missing data (i.e., `NA`), and use some imputation technique to deal with these cases. In particular, we can use the mean (or median) of `year + 1` and `year - 1`.
+3.  Same as in `2.`.
+4.  Set the population size such that the mortality rate is the (lower or upper) limit not to be considered an outlier. To determine the threshold defining an outlier, we analyze the variation of the corresponding time series (say, $\text{mean} \pm 3\times\text{sd}$) over a pre-defined time period; in particular, we considered the interpolated (not extrapolated) interval---i.e., 2005-2018.
+5.  Same as in `4`.
+
+After post-processing the data this way, we may still spot some outliers for specific municipalities and strata (these outliers are defined based on the averaged time-series for the mortality or fertility rates). To overcome this problem, we (once again) identify these values and replace them with `NA`---as before, $x_i$ is an outlier if it does not fall within $\text{mean}(\mathbf{x}) \pm 3\times\text{sd}(\mathbf{x})$. The imputation procedure is based on the first-order neighbors; i.e., we replace it by the mean (or median) of the neighbors' rates.
+
+Lastly, as the corrections were made independently for the mortality and fertility rates, the estimated population in these two groups may not be the same for all combinations of municipality, gender, and age group. To correct this, we simply average the corresponding population estimates and re-compute the rates accordingly.
+
+These are the final total population estimates. As a remark, the aforementioned correction process was made **only for the age groups `10+`**; i.e., the population estimates for individuals `0-9` was kept as original (as we are not using them when estimating the mortality and fertility rates).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# Load municipalities and codes
+mun <- read_csv(file = "../DATA/municipalities_code.csv")
+names(mun) <- c("Code", "Municipality")
+mun$Code <- as.integer(mun$Code)
+
+# Process `old_pop`
+old_pop <- read_csv(file = "../DATA/Population from Census/pop_years_list_municipality.csv")
+old_pop <- old_pop %>% select(Sex, Mun, Year, Age, Population)
+colnames(old_pop) <- c("gender", "loc", "year", "age", "population")
+old_pop <- old_pop %>% arrange(gender, loc, year, age)
+old_pop <- old_pop %>% filter(year <= 2021)
+old_pop <- old_pop %>% group_by(loc, year) %>% summarize(total_pop = sum(population))
+colnames(old_pop) <- c("Code", "Year", "Population")
+old_pop$Code <- as.integer(as.character(old_pop$Code))
+old_pop$Year <- as.integer(old_pop$Year)
+old_pop$Population <- as.integer(old_pop$Population)
+old_pop <- right_join(x = old_pop, y = mun, by = "Code") %>% select(Code, Municipality, Year, Population) %>% arrange(desc(Year), desc(Population)) %>% ungroup() %>% mutate(row_idx = row_number()) %>% column_to_rownames("row_idx")
+old_pop$Type <- "Old"
+
+# Process `new_pop`
+new_pop <- readRDS(file = "../DATA/Population from Census/updated_pop_Municipality.RDS")
+new_pop <- new_pop %>% group_by(loc, year) %>% summarize(total_pop = sum(population))
+colnames(new_pop) <- c("Code", "Year", "Population")
+new_pop$Code <- as.integer(as.character(new_pop$Code))
+new_pop$Year <- as.integer(new_pop$Year)
+new_pop$Population <- as.integer(new_pop$Population)
+new_pop <- right_join(x = new_pop, y = mun, by = "Code") %>% select(Code, Municipality, Year, Population) %>% arrange(desc(Year), desc(Population)) %>% ungroup() %>% mutate(row_idx = row_number()) %>% column_to_rownames("row_idx")
+new_pop$Type <- "Updated"
+
+pop <- bind_rows(old_pop, new_pop)
+pop$Type <- factor(pop$Type, levels = c("Old", "Updated"))
+
+datatable(new_pop, rownames = TRUE, filter = "top", options = list(columnDefs = list(list(targets = c(1, 4), searchable = FALSE)))) %>% 
+  formatCurrency("Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+<br/>
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+if (FALSE) { 
+  colombia <- readRDS(file = "../DATA/colombia_map_municipality.RDS")
+  tmp_colombia <- right_join(x = new_pop, y = colombia, by = "Code")
+  tmp_colombia$Year <- factor(tmp_colombia$Year, levels = sort(unique(tmp_colombia$Year)))
+  
+  mn <- min(tmp_colombia$Population)
+  mx <- max(tmp_colombia$Population)
+  
+  breaks <- c(0, 1000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000, 2000000, 5000000, 8000000)
+  labels <- c("0-1,000", "1,001-5,000", "5,001-10,000", "10,001-20,000", "20,001-50,000", "50,001-100,000", "100,001-200,000", "200,001-500,000", "500,001-1,000,000", "1,000,001-2,000,000", "2,000,001-5,000,000", "5,000,001-8,000,000")
+  tmp_colombia$category <- cut(tmp_colombia$Population, breaks = breaks, labels = labels)
+  
+  pp <- ggplot(data = tmp_colombia, aes(geometry = geometry)) + 
+               geom_sf(aes(fill = category), color = "black") + 
+               facet_wrap(~ Year) +
+               # scale_fill_viridis(breaks = labs, labels = labs, limits = c(labs[1], tail(labs, 1))) +
+               scale_fill_viridis_d(guide = guide_legend(title = "Population")) +
+               labs(x = "Longitude", y = "Latitude", title = "", fill = "Population") + 
+               theme_bw() +
+               theme(legend.position = "right", 
+                     text = element_text(size = 10, family = "LM Roman 10"), 
+                     plot.title = element_text(size = 10, hjust = 0.5))
+    
+  ggsave(filename = paste("images/population_updated.jpeg", sep = ""), plot = pp, width = 3000, height = 3000, units = c("px"), dpi = 300, bg = "white")
+}
+```
+
+![](images/population_updated.jpeg){width="100%"}
+
+When aggregating the data over the municipalities, the yearly `Total population` estimates are as follows.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+agg_pop <- pop %>% group_by(Year, Type) %>% summarise("Total population" = sum(Population))
+pop_time_series <- ggplot(data = agg_pop) +
+                     geom_line(mapping = aes(x = Year, y = `Total population`, color = Type)) +
+                     labs(x = "Year", y = "Total population", title = "Estimated population in Colombia from 1998 to 2021") + 
+                     scale_color_discrete(name = "Data version") +
+                     theme_bw() +
+                     theme(legend.position = "right", 
+                           text = element_text(size = 12, family = "LM Roman 10"), 
+                           plot.title = element_text(size = 12))
+
+pop_time_series
+
+agg_pop <- agg_pop %>% select(c("Type", "Year", "Total population")) %>% arrange(desc(Type), desc(Year))
+agg_pop <- agg_pop %>% ungroup()
+
+
+datatable(agg_pop, rownames = FALSE, filter = "top", options = list(pageLength = 5, columnDefs = list(list(targets = c(2), searchable = FALSE)))) %>% formatCurrency("Total population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+
+
+### Correction details
+
+Given the original `population` data set---after interpolating (and extrapolating) the unobserved years, we applied the aforementioned corrections in
+
+1.  Negative population estimates: $1,547$ rows (out of $511,632$, i.e., $\approx 0.30\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+removing_negative <- read_csv(file = "data/removing_negative.csv") 
+
+datatable(removing_negative, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+2.  Impossible population estimates (mortality): $27$ rows (out of $511,632$, i.e., $\approx 0.01\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+impossible_pop_mortality <- read_csv(file = "data/impossible_pop_mortality.csv") 
+
+datatable(impossible_pop_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+3.  Impossible population estimates (fertility): $138$ rows (out of $484,704$, i.e., $\approx 0.03\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+impossible_pop_fertility <- read_csv(file = "data/impossible_pop_fertility.csv") 
+
+datatable(impossible_pop_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+4.  Unlikely population estimates (mortality): $16,673$ rows (out of $511,632$, i.e., $\approx 3.26\%$). More specifically, $11,410$ rows in 1998-2005 (out of $170,544$, i.e., $\approx 6.69\%$), and $5,263$ rows in 2006-2021 (out of $341,088$, i.e., $\approx 1.54\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+unlikely_pop_mortality <- read_csv(file = "data/unlikely_pop_mortality.csv") 
+
+datatable(unlikely_pop_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+5. Unlikely population estimates (fertility): $19,927$ rows (out of $484,704$, i.e., $\approx 4.11\%$). More specifically, $17,248$ rows in 1998-2005 (out of $161,568$, i.e., $\approx 10.68\%$), and $2,679$ rows in 2006-2021 (out of $323,136$, i.e., $\approx 0.83\%$).  
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+unlikely_pop_fertility <- read_csv(file = "data/unlikely_pop_fertility.csv") 
+
+datatable(unlikely_pop_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+**Extra (detection and correction of spatial outliers).** See procedure described in the previous section.
+
+6. Spatial outliers (mortality): $2,330$ rows (out of $511,632$, i.e., $\approx 0.46\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+spatial_outlier_mortality <- read_csv(file = "data/spatial_outlier_mortality.csv") 
+
+datatable(spatial_outlier_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+7. Spatial outliers (fertility): $2,126$ rows (out of $484,704$, i.e., $\approx 0.44\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+spatial_outlier_fertility <- read_csv(file = "data/spatial_outlier_fertility.csv") 
+
+datatable(spatial_outlier_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+**Final step:** average population based on the mortality and fertility rates.
+
+8. Make population based `mortality rates` and `fertility rates` equivalent: $35,748$ rows (`mortality rates`: out of $511,632$, i.e., $\approx 6.99\%$, and `fertility rates`: out of $484,704$, i.e., $\approx 7.38\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+equalize_pop <- read_csv(file = "data/equalize_pop.csv") 
+
+datatable(equalize_pop, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+---
+
+**FINAL REMARK:** The total number of rows is, at most, $511,632$; i.e., $24$ years, $1,122$ municipalities, and $19$ age groups ($9$ age groups for women and $10$ age groups for men). When dealing with fertility data, there are $8$ age groups for women and $10$ age groups for men.
+
+<!-- > For the following analysis, I did **not** freeze the fertility and mortality rates, instead, I just applied the detailed corrections.-->
+
+---
+
+### Results
+
+Now, we will analyse the the `mortality rates` and `fertility rates` after processing the population data (as per the above procedure).
+
+---
+
+Figures below show the time series for the mortality and fertility counts (and rates) of female and male individuals in the 25-29 age group in 40 randomly selected municipalities.
+
+**Mortality Female**
+
+![](images/time_series_death_Female_25-29_Municipality_per1K_TRUE.jpeg){width="50%"}
+
+**Mortality Male**
+
+![](images/time_series_death_Male_25-29_Municipality_per1K_TRUE.jpeg){width="50%"}
+
+**Fertility Female**
+
+![](images/time_series_birth_Female_25-29_Municipality_per1K_TRUE.jpeg){width="50%"}
+
+**Fertility Male**
+
+![](images/time_series_birth_Male_25-29_Municipality_per1K_TRUE.jpeg){width="50%"}
+
+---
+
+Next, we show the estimated mortality and fertility rates (mean and standard deviation) of female and male individuals in all age groups and municipalities.
+
+**Mortality Female**
+
+![](images/maps_mortality_female_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="75%"}
+
+**Mortality Male**
+
+![](images/maps_mortality_male_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="75%"}
+
+**Fertility Female**
+
+![](images/maps_fertility_female_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="75%"}
+
+**Fertility Male**
+
+![](images/maps_fertility_male_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="75%"}
+
+<!--# Compute the overdispersion coefficient-->

@@ -1,0 +1,436 @@
+---
+title: "Orphanhood in Colombia"
+format:
+  html: 
+    css: "style.css"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library("tidyverse")
+library("DT")
+library("sf")
+library("viridis")
+
+# Load municipalities and codes
+mun <- read_csv(file = "../DATA/municipalities_code.csv")
+names(mun) <- c("Code", "Municipality")
+mun$Code <- as.factor(as.integer(mun$Code))
+```
+
+As a result of this **preliminary** investigation (subject to changes and corrections), we estimated the orphanhood incidence in Colombia in 2021 at the municipality level; that is, the number of children (per 1,000) aged 0-17 years who lost their parents due to any cause (total absolute number is 71,167 children). The details and additional analyses are presented in the next sections.
+
+![](images/orphans_rate_2021.jpeg){width="100%"}
+
+
+
+## Mortality and Fertility rates
+
+The mortality and fertility rates are computed based on the populations estimates from 1998 to 2021. Such population estimates are based on the census of 2005 and 2018, such that the remaining years were obtained by linearly interpolating (and extrapolating) these two data sources **at the desired spatial resolution**.
+
+However, specially for fine resolutions (e.g., at municipality level), the population estimates might be inaccurate (so are the mortality and fertility rates). This happens more often for estimates before 2005.
+
+Notably, for the following observed issues, we proceeded as detailed below.
+
+**REMARK:** The total number of rows is, at most, $511,632$; i.e., $24$ years, $1,122$ municipalities, and $19$ age groups ($9$ age groups for women and $10$ age groups for men). When working with fertility data, there are $8$ age groups for women and $10$ age groups for men.
+
+------------------------------------------------------------------------
+
+### Problem #1
+
+**Description:** Negative population estimate (from the linear interpolation method).
+
+**Solution:** Replace the negative population estimates with later year estimates (if the estimates are always negative, set the population size to `0`).
+
+**Population table:** we modified $1,547$ rows (out of $511,632$, i.e., $\approx 0.30\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+removing_negative <- read_csv(file = "../PROCESS_DATA/AUX_DATA/removing_negative.csv") 
+
+datatable(removing_negative, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #2
+
+**Description:** Impossible population estimates with respect to the number of deaths (e.g., the "number of deaths" estimates are larger than the population estimates for some strata).
+
+**Solution:** Treat the impossible values as missing data (i.e., `NA`), and use some imputation technique to deal with these cases. In particular, we can use the mean (or median) of `year + 1` and `year - 1`.
+
+**Population table:** we modified $27$ rows (out of $511,632$, i.e., $\approx 0.01\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/AFTER_IMPOSSIBLE_RATES.RDS")
+
+org_mortality <- org$mortality_rates
+emp_mortality <- fnl$mortality_rates %>% filter(mod == 2)
+fnl_mortality <- fnl$mortality_rates
+
+org_mortality <- left_join(emp_mortality, org_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_mortality <- left_join(x = org_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_mortality <- left_join(emp_mortality, fnl_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_mortality <- left_join(x = fnl_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_mortality <- org_mortality %>% mutate("Updated Population" = fnl_mortality$`Updated Population`)
+
+datatable(org_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #3
+
+**Description:** Impossible population estimates with respect to the number of births (e.g., the number of births is non-zero while the population is zero).
+
+**Solution:** Same as in `Problem #2`.
+
+**Population table:** we modified $138$ rows (out of $484,704$, i.e., $\approx 0.03\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/AFTER_IMPOSSIBLE_RATES.RDS")
+
+org_fertility <- org$fertility_rates
+emp_fertility <- fnl$fertility_rates %>% filter(mod == 2)
+fnl_fertility <- fnl$fertility_rates
+
+org_fertility <- left_join(emp_fertility, org_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_fertility <- left_join(x = org_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_fertility <- left_join(emp_fertility, fnl_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_fertility <- left_join(x = fnl_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_fertility <- org_fertility %>% mutate("Updated Population" = fnl_fertility$`Updated Population`)
+
+datatable(org_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #4
+
+**Description:** Unlikely population estimates with respect to the number of deaths.
+
+**Solution:** Set the population size such that the mortality rate is the (lower or upper) limit not to be considered an outlier. To determine the threshold defining an outlier, we analyze the variation of the corresponding time series (say, $\text{mean} \pm 3\times\text{sd}$) over a pre-defined time period; in particular, we considered the interpolated (not extrapolated) interval—i.e., 2005-2018.
+
+<!--Set the population size such that the mortality rate is the same as the average of the mortality rates for the considered stratum within the analyzed interval. To determine the threshold defining an outlier, we analyze the variation of the corresponding time series (say, $\text{mean} \pm 3\times\text{sd}$) over a pre-defined time period; in particular, we considered the interpolated (not extrapolated) interval---i.e., 2005-2018.-->
+
+
+**Population table:** we modified $17,874$ rows (out of $511,632$, i.e., $\approx 3.49\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/FINAL_RATES.RDS")
+
+org_mortality <- org$mortality_rates
+emp_mortality <- fnl$mortality_rates %>% filter(mod == 3)
+fnl_mortality <- fnl$mortality_rates
+
+org_mortality <- left_join(emp_mortality, org_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_mortality <- left_join(x = org_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_mortality <- left_join(emp_mortality, fnl_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_mortality <- left_join(x = fnl_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_mortality <- org_mortality %>% mutate("Updated Population" = fnl_mortality$`Updated Population`)
+
+datatable(org_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #5
+
+**Description:** Unlikely population estimates with respect to the number of births (e.g., the number of births are 5+ times the number population size for some strata).
+
+**Solution:** Same as in `Problem #4`.
+
+**Population table:** we modified $19,942$ rows (out of $484,704$, i.e., $\approx 4.11\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/FINAL_RATES.RDS")
+
+org_fertility <- org$fertility_rates
+emp_fertility <- fnl$fertility_rates %>% filter(mod == 3)
+fnl_fertility <- fnl$fertility_rates
+
+org_fertility <- left_join(emp_fertility, org_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_fertility <- left_join(x = org_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_fertility <- left_join(emp_fertility, fnl_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_fertility <- left_join(x = fnl_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_fertility <- org_fertility %>% mutate("Updated Population" = fnl_fertility$`Updated Population`)
+
+datatable(org_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #6
+
+**Description:** After processing the data as in `Problems #1-5`, we may still spot some outliers for specific municipalities and strata.
+
+**Solution:** To overcome this problem, we (once again) identify these values and replace them with `NA`. As before, $x_i$ is an outlier if it does not fall within $\text{mean}(\mathbf{x}) \pm 3\times\text{sd}(\mathbf{x})$. <!--such that $\mathbf{x}$ is the set of $n^{\text{th}}$-order neighbors (we set $n = 2$).-->The imputation procedure is also based on the $n^{\text{th}}$-order neighbors ($n = 1$); i.e., we replace it by the mean (or median) of the neighbors' rates.
+
+**Population table:**
+
+-   Mortality: we modified $2,520$ rows (out of $511,632$, i.e., $\approx 0.49\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/FINAL_RATES.RDS")
+
+org_mortality <- org$mortality_rates
+emp_mortality <- fnl$mortality_rates %>% filter(mod == 4)
+fnl_mortality <- fnl$mortality_rates
+
+org_mortality <- left_join(emp_mortality, org_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_mortality <- left_join(x = org_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_mortality <- left_join(emp_mortality, fnl_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_mortality <- left_join(x = fnl_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_mortality <- org_mortality %>% mutate("Updated Population" = fnl_mortality$`Updated Population`)
+
+datatable(org_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br />
+
+-   Fertility: we modified $8,922$ rows (out of $484,704$, i.e., $\approx 0.57\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/FINAL_RATES.RDS")
+
+org_fertility <- org$fertility_rates
+emp_fertility <- fnl$fertility_rates %>% filter(mod == 4)
+fnl_fertility <- fnl$fertility_rates
+
+org_fertility <- left_join(emp_fertility, org_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_fertility <- left_join(x = org_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_fertility <- left_join(emp_fertility, fnl_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_fertility <- left_join(x = fnl_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_fertility <- org_fertility %>% mutate("Updated Population" = fnl_fertility$`Updated Population`)
+
+datatable(org_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+### Problem #7
+
+**Description:** As the corrections were made independently for the mortality and fertility rates, the estimated population in these two groups may not be the same for all combinations of municipality, gender, and age group.
+
+**Solution:** To correct this, we set to `NA` the `population` and `X_rate` columns for all rows where there is a missing value in either `mortality_rates` or `fertility_rates`.<!-- The imputation is performed by averaging `X_rate` based on the corresponding values for `year + 1` and `year - 1`--> For imputation, after the corrections from the previous steps, we average the population estimates for the two data sets and re-compute the rates accordingly.
+
+**Population table:**
+
+-   Mortality: we modified $36,121$ rows (out of $511,632$, i.e., $\approx 7.06\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/EQUALIZED_RATES.RDS")
+
+org_mortality <- org$mortality_rates
+emp_mortality <- fnl$mortality_rates %>% filter(mod == 5)
+fnl_mortality <- fnl$mortality_rates
+
+org_mortality <- left_join(emp_mortality, org_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_mortality <- left_join(x = org_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_mortality <- left_join(emp_mortality, fnl_mortality, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_mortality <- left_join(x = fnl_mortality, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_mortality <- org_mortality %>% mutate("Updated Population" = fnl_mortality$`Updated Population`)
+
+datatable(org_mortality, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br />
+
+-   Fertility: we modified $36,121$ rows (out of $484,704$, i.e., $\approx 7.45\%$).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+org <- readRDS(file = "../PROCESS_DATA/ORIGINAL_RATES.RDS")
+fnl <- readRDS(file = "../PROCESS_DATA/EQUALIZED_RATES.RDS")
+
+org_fertility <- org$fertility_rates
+emp_fertility <- fnl$fertility_rates %>% filter(mod == 5)
+fnl_fertility <- fnl$fertility_rates
+
+org_fertility <- left_join(emp_fertility, org_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Old Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Old Population")
+
+org_fertility <- left_join(x = org_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Old Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+fnl_fertility <- left_join(emp_fertility, fnl_fertility, by = c("gender", "loc", "year", "age")) %>% select(c("gender", "loc", "year", "age", "population.y")) %>% mutate(`Updated Population` = population.y) %>% select(-population.y) %>% mutate(Code = loc, Sex = gender, Year = year, Age = age) %>% select(-c(loc, gender, year, age)) %>% select(Code, Sex, Year, Age, "Updated Population")
+
+fnl_fertility <- left_join(x = fnl_fertility, y = mun, by = "Code") %>% select(Code, Municipality, Sex, Year, Age, "Updated Population") %>% arrange(desc(Code), Sex, Year, Age)
+
+# FINAL (MANUAL) JOIN
+org_fertility <- org_fertility %>% mutate("Updated Population" = fnl_fertility$`Updated Population`)
+
+datatable(org_fertility, rownames = FALSE, options = list(pageLength = 5)) %>% formatCurrency("Old Population", currency = "", interval = 3, mark = ",", digits = 0) %>% formatCurrency("Updated Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+------------------------------------------------------------------------
+
+<br />
+
+These are the final total population estimates. As a remark, the aforementioned correction process was made **only for the age groups `10+`**; i.e., the population estimates for individuals `0-9` were kept as original (as we are not using them when estimating the mortality and fertility rates).
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+
+# Retrieve age `0-9`
+tmp_pop <- read_csv(file = "../DATA/Population from Census/pop_years_list_municipality.csv")
+tmp_pop <- tmp_pop %>% select(Sex, Mun, Year, Age, Population)
+colnames(tmp_pop) <- c("gender", "loc", "year", "age", "population")
+tmp_pop <- tmp_pop %>% arrange(gender, loc, year, age)
+tmp_pop <- tmp_pop %>% filter(year <= 2021, age == "0-9")
+tmp_pop$loc <- factor(tmp_pop$loc)
+
+# Process `old_pop`
+old_pop <- readRDS(file = "../PROCESS_DATA/OLD_POPULATION.RDS")
+old_pop <- bind_rows(tmp_pop, old_pop) %>% arrange(gender, loc, year, age)
+old_pop <- old_pop %>% group_by(loc, year) %>% summarize(total_pop = sum(population))
+colnames(old_pop) <- c("Code", "Year", "Population")
+old_pop$Code <- as.factor(as.integer(as.character(old_pop$Code)))
+old_pop$Year <- as.integer(old_pop$Year)
+old_pop$Population <- as.integer(old_pop$Population)
+old_pop <- right_join(x = old_pop, y = mun, by = "Code") %>% select(Code, Municipality, Year, Population) %>% arrange(desc(Year), desc(Population)) %>% ungroup() %>% mutate(row_idx = row_number()) %>% column_to_rownames("row_idx")
+old_pop$Type <- "Old"
+
+# Process `new_pop`
+new_pop <- readRDS(file = "../PROCESS_DATA/EQUALIZED_POPULATION.RDS") # FINAL_POPULATION.RDS
+new_pop <- bind_rows(tmp_pop, new_pop) %>% arrange(gender, loc, year, age)
+new_pop <- new_pop %>% group_by(loc, year) %>% summarize(total_pop = sum(population))
+colnames(new_pop) <- c("Code", "Year", "Population")
+new_pop$Code <- as.factor(as.integer(as.character(new_pop$Code)))
+new_pop$Year <- as.integer(new_pop$Year)
+new_pop$Population <- as.integer(new_pop$Population)
+new_pop <- right_join(x = new_pop, y = mun, by = "Code") %>% select(Code, Municipality, Year, Population) %>% arrange(desc(Year), desc(Population)) %>% ungroup() %>% mutate(row_idx = row_number()) %>% column_to_rownames("row_idx")
+new_pop$Type <- "Updated"
+
+pop <- bind_rows(old_pop, new_pop)
+pop$Type <- factor(pop$Type, levels = c("Old", "Updated"))
+
+datatable(new_pop, rownames = TRUE, filter = "top", options = list(columnDefs = list(list(targets = c(1, 4), searchable = FALSE)))) %>% 
+  formatCurrency("Population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+<br/>
+
+When aggregating the data over the municipalities, the yearly `Total population` estimates are as follows.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+agg_pop <- pop %>% group_by(Year, Type) %>% summarise("Total population" = sum(Population))
+pop_time_series <- ggplot(data = agg_pop) +
+                     geom_line(mapping = aes(x = Year, y = `Total population`, color = Type)) +
+                     labs(x = "Year", y = "Total population", title = "Estimated population in Colombia from 1998 to 2021") + 
+                     scale_color_discrete(name = "Data version") +
+                     theme_bw() +
+                     theme(legend.position = "right", 
+                           text = element_text(size = 12, family = "LM Roman 10"), 
+                           plot.title = element_text(size = 12))
+
+pop_time_series
+
+agg_pop <- agg_pop %>% select(c("Type", "Year", "Total population")) %>% arrange(desc(Type), desc(Year))
+agg_pop <- agg_pop %>% ungroup()
+
+
+datatable(agg_pop, rownames = FALSE, filter = "top", options = list(pageLength = 5, columnDefs = list(list(targets = c(2), searchable = FALSE)))) %>% formatCurrency("Total population", currency = "", interval = 3, mark = ",", digits = 0)
+```
+
+### Results
+
+Now, we will analyse the the `mortality rates` and `fertility rates` **before** (`Old`) and **after** (`New`) processing the population data (as per the above procedure).
+
+------------------------------------------------------------------------
+
+Figures below show the time series for the mortality and fertility counts (and rates) of female and male individuals in the 25-29 age group in 40 randomly selected municipalities.
+
+**Mortality Female**
+
+| Old                                                                                 | New                                                                                 |
+|------------------------------------|------------------------------------|
+| ![](images/time_series_death_Female_25-29_Municipality_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/time_series_death_Female_25-29_Municipality_per1K_TRUE.jpeg){width="100%"} |
+
+**Mortality Male**
+
+| Old                                                                                 | New                                                                                 |
+|------------------------------------|------------------------------------|
+| ![](images/time_series_death_Male_25-29_Municipality_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/time_series_death_Male_25-29_Municipality_per1K_TRUE.jpeg){width="100%"} |
+
+**Fertility Female**
+
+| Old                                                                                   | New                                                                                   |
+|------------------------------------|------------------------------------|
+| ![](images/time_series_birth_Female_25-29_Municipality_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/time_series_birth_Female_25-29_Municipality_per1K_TRUE.jpeg){width="100%"} |
+
+**Fertility Male**
+
+| Old                                                                                 | New                                                                                 |
+|------------------------------------|------------------------------------|
+| ![](images/time_series_birth_Male_25-29_Municipality_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/time_series_birth_Male_25-29_Municipality_per1K_TRUE.jpeg){width="100%"} |
+
+------------------------------------------------------------------------
+
+Next, we show the estimated mortality and fertility rates (mean and standard deviation) of female and male individuals in all age groups and municipalities.
+
+**Mortality Female**
+
+| Old                                                                                          | New                                                                                          |
+|------------------------------------|------------------------------------|
+| ![](images/maps_mortality_female_Municipality_pseudoLog_FALSE_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/maps_mortality_female_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="100%"} |
+
+**Mortality Male**
+
+| Old                                                                                        | New                                                                                        |
+|------------------------------------|------------------------------------|
+| ![](images/maps_mortality_male_Municipality_pseudoLog_FALSE_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/maps_mortality_male_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="100%"} |
+
+**Fertility Female**
+
+| Old                                                                                          | New                                                                                          |
+|------------------------------------|------------------------------------|
+| ![](images/maps_fertility_female_Municipality_pseudoLog_FALSE_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/maps_fertility_female_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="100%"} |
+
+**Fertility Male**
+
+| Old                                                                                        | New                                                                                        |
+|------------------------------------|------------------------------------|
+| ![](images/maps_fertility_male_Municipality_pseudoLog_FALSE_per1K_TRUE_original_data.jpeg){width="100%"} | ![](images/maps_fertility_male_Municipality_pseudoLog_FALSE_per1K_TRUE.jpeg){width="100%"} |
+
+<!--# Compute the overdispersion coefficient-->
