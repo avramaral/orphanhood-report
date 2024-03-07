@@ -21,12 +21,6 @@ names(mun) <- c("Code", "Municipality")
 mun$Code <- as.factor(as.integer(mun$Code))
 ```
 
-As a result of this **preliminary** investigation (subject to changes and corrections), we estimated the orphanhood incidence in Colombia in 2021 at the municipality level; that is, the number of children (per 1,000) aged 0-17 years who lost their parents due to any cause (total absolute number is 71,167 children). The details and additional analyses are presented in the next sections.
-
-![](images/orphans_rate_2021.jpeg){width="100%"}
-
-
-
 ## Mortality and Fertility rates
 
 The mortality and fertility rates are computed based on the populations estimates from 1998 to 2021. Such population estimates are based on the census of 2005 and 2018, such that the remaining years were obtained by linearly interpolating (and extrapolating) these two data sources **at the desired spatial resolution**.
